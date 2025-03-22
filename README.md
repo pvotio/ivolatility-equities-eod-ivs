@@ -29,11 +29,14 @@ This repository contains a **Python-based ETL** job for retrieving **iVolatility
 
 This ETL job:
 
-1. **Selects** a list of symbols from an **Azure SQL** table (using a user-provided T-SQL query).  
-2. **Deletes** any existing rows in the target table for each symbol/date range.  
-3. **Fetches** new data from the iVolatility `"/equities/eod/ivs"` API for each symbol.  
-4. **Renames** columns (if needed) to align with the SQL schema.  
-5. **Inserts** the fetched data into your **Azure SQL** table.  
+1. **Fetches ticker + region** from an **Azure SQL** table (via `SELECT TOP 100 Stock_ticker AS symbol, region FROM ivolatility_underlying_info WHERE Status = 'Active'`).
+2. **Uses the first row** to retrieve:
+   - A **T-SQL query** to fetch symbols + regions
+   - A **default region** fallback (if not provided per symbol)
+3. **Deletes** any existing rows in the target table for each symbol/date range.  
+4. **Fetches** new data from the iVolatility `"/equities/eod/ivs"` API.  
+5. **Renames** columns to align with the SQL schema.  
+6. **Inserts** the fetched data into your **Azure SQL** table.  
 
 It can be run **locally**, as a **Docker** container, or on a **Kubernetes** cluster (e.g., AKS) via a CronJob.
 
@@ -58,11 +61,11 @@ It can be run **locally**, as a **Docker** container, or on a **Kubernetes** clu
 
 ```
 ivolatility-eod-ivs-etl/
-├── main.py      # Main Python ETL script
+├── main.py              # Main Python ETL script
 ├── requirements.txt     # Python dependencies
 ├── Dockerfile           # Docker build configuration
-├── .gitignore           # (Recommended) Git ignore patterns
-├── .dockerignore        # (Recommended) Docker ignore patterns
+├── .gitignore           # Git ignore patterns
+├── .dockerignore        # Docker ignore patterns
 └── README.md            # Project documentation (this file)
 ```
 
@@ -77,7 +80,7 @@ ivolatility-eod-ivs-etl/
    git clone https://github.com/YourOrg/ivolatility-eod-ivs-etl.git
    cd ivolatility-eod-ivs-etl
    ```
-2. **Install dependencies** (Python 3.9+ and pip):
+2. **Install dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
@@ -87,16 +90,8 @@ ivolatility-eod-ivs-etl/
    export DB_SERVER="your-azure-sql.database.windows.net"
    export DB_NAME="YourDatabase"
    export TARGET_TABLE="etl.ivolatility_ivs"
-   export DATE_FROM="2021-12-10"
-   export DATE_TO="2021-12-17"
-   export TICKER_SQL="SELECT symbol FROM MySymbols"
-   # etc...
-
-   python etl_ivol_ivs.py
+   python main.py
    ```
-4. The script will:
-   - Delete rows in `[etl].[ivolatility_ivs]` for each symbol/date range.
-   - Fetch new data from iVolatility and insert it.
 
 ### Docker Build & Run
 
@@ -104,14 +99,12 @@ ivolatility-eod-ivs-etl/
    ```bash
    docker build -t ivol-ivs-etl:latest .
    ```
-2. **Run** the container, passing environment variables:
+2. **Run** the container:
    ```bash
-   docker run --rm      -e IVOL_API_KEY="YOUR_IVOL_API_KEY"      -e DB_SERVER="your-azure-sql.database.windows.net"      -e DB_NAME="YourDatabase"      -e TARGET_TABLE="etl.ivolatility_ivs"      -e DATE_FROM="2021-12-10"      -e DATE_TO="2021-12-17"      -e TICKER_SQL="SELECT symbol FROM MySymbols"      -e MAX_WORKERS="12"      ivol-ivs-etl:latest
+   docker run --rm      -e IVOL_API_KEY="YOUR_IVOL_API_KEY"      -e DB_SERVER="your-azure-sql.database.windows.net"      -e DB_NAME="YourDatabase"      -e TARGET_TABLE="etl.ivolatility_ivs"      ivol-ivs-etl:latest
    ```
 
 ### Kubernetes CronJob
-
-Below is a **sample CronJob** that runs the ETL daily at 3 AM UTC on **AKS**:
 
 ```yaml
 apiVersion: batch/v1
@@ -140,35 +133,25 @@ spec:
                   value: "YourDatabase"
                 - name: TARGET_TABLE
                   value: "etl.ivolatility_ivs"
-                - name: DATE_FROM
-                  value: "2021-12-10"
-                - name: DATE_TO
-                  value: "2021-12-17"
-                - name: TICKER_SQL
-                  value: "SELECT symbol FROM MySymbols"
-                - name: MAX_WORKERS
-                  value: "12"
 ```
 
 ---
 
 ## Environment Variables
 
-| Variable       | Description                                                                            | Required | Default                 |
-|----------------|----------------------------------------------------------------------------------------|----------|-------------------------|
-| `IVOL_API_KEY` | Your iVolatility API key.                                                              | **Yes**  | —                       |
-| `DB_SERVER`    | Azure SQL server (e.g. `myserver.database.windows.net`).                                | **Yes**  | —                       |
-| `DB_NAME`      | Name of the DB (e.g. `MyDatabase`).                                                    | **Yes**  | —                       |
-| `TARGET_TABLE` | Target table name (e.g. `etl.ivolatility_ivs`).                                        | **No**   | `etl.ivolatility_ivs`   |
-| `DATE_FROM`    | Start date for the API call (e.g. `YYYY-MM-DD`).                                       | **No**   | (script may default)    |
-| `DATE_TO`      | End date for the API call.                                                             | **No**   | (script may default)    |
-| `TICKER_SQL`   | T-SQL query returning symbols (and optionally region).                                 | **No**   | `SELECT symbol FROM MySymbols` |
-| `MAX_WORKERS`  | Number of threads for parallel API fetching.                                           | **No**   | `12`                    |
-| `OTM_FROM`     | `out-of-the-money` lower bound (int).                                                 | **No**   | `0`                     |
-| `OTM_TO`       | `out-of-the-money` upper bound (int).                                                 | **No**   | `0`                     |
-| `REGION`       | Default region if not provided in the ticker SQL.                                      | **No**   | `USA`                   |
-| `PERIOD_FROM`  | Lower bound for period (int).                                                          | **No**   | `90`                    |
-| `PERIOD_TO`    | Upper bound for period (int).                                                          | **No**   | `90`                    |
+| Variable       | Description                                                  | Required | Default                 |
+|----------------|--------------------------------------------------------------|----------|-------------------------|
+| `IVOL_API_KEY` | Your iVolatility API key.                                    | **Yes**  | —                       |
+| `DB_SERVER`    | Azure SQL server hostname.                                   | **Yes**  | —                       |
+| `DB_NAME`      | Azure SQL database name.                                     | **Yes**  | —                       |
+| `TARGET_TABLE` | Target table for inserts.                                    | **Yes**  | —                       |
+| `DATE_FROM`    | Start date (optional, defaults to yesterday).                | No       | Yesterday               |
+| `DATE_TO`      | End date (optional, defaults to today).                      | No       | Today                   |
+| `MAX_WORKERS`  | Number of threads for concurrent API calls.                  | No       | 12                      |
+| `OTM_FROM`     | Out-of-the-money lower bound.                                | No       | 0                       |
+| `OTM_TO`       | Out-of-the-money upper bound.                                | No       | 0                       |
+| `PERIOD_FROM`  | Period lower bound (days).                                   | No       | 90                      |
+| `PERIOD_TO`    | Period upper bound (days).                                   | No       | 90                      |
 
 ---
 
@@ -177,15 +160,14 @@ spec:
 ```sql
 CREATE TABLE [etl].[ivolatility_ivs] (
     [record_no]  INT            NOT NULL,
-    [symbol]     NVARCHAR(50)   NULL,
-    [exchange]   NVARCHAR(50)   NULL,
-    [date]       DATE           NULL,
-    [period]     INT            NULL,
-    [strike]     DECIMAL(18,2)  NULL,
-    [OTM]        INT            NULL,
-    [Call_Put]   NVARCHAR(10)   NULL,
-    [IV]         DECIMAL(10,6)  NULL,
-    [delta]      DECIMAL(10,6)  NULL
+    [symbol]     NVARCHAR(50),
+    [region]     NVARCHAR(50),
+    [date]       DATE,
+    [Call_Put]   NVARCHAR(10),
+    [OTM]        INT,
+    [IV]         DECIMAL(10,6),
+    [delta]      DECIMAL(10,6),
+    CONSTRAINT PK_ivolatility_ivs PRIMARY KEY ([record_no])
 );
 ```
 
@@ -193,11 +175,13 @@ CREATE TABLE [etl].[ivolatility_ivs] (
 
 ## Contributing
 
-Contributions are welcome! Please:
+We welcome contributions! Please:
 
-1. Fork the repository and create a new branch for your feature or fix.  
-2. Write tests if necessary and ensure the code passes.  
-3. Submit a PR with a clear description of your changes.
+1. Fork this repository.
+2. Create a new branch (`git checkout -b feature/my-feature`).
+3. Make your changes.
+4. Commit (`git commit -am 'Add new feature'`).
+5. Push (`git push origin feature/my-feature`) and create a Pull Request.
 
 ---
 
@@ -206,17 +190,14 @@ Contributions are welcome! Please:
 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 
 ```
-Copyright 2025 pvotio
-
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
-You may obtain a copy of the License at 
+You may obtain a copy of the License at
 
-   http://www.apache.org/licenses/LICENSE-2.0 
+   http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreed to in writing, software 
-distributed under the License is distributed on an "AS IS" BASIS, 
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
-See the License for the specific language governing permissions and 
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
 limitations under the License.
-```
