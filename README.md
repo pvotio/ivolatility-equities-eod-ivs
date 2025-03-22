@@ -58,7 +58,7 @@ It can be run **locally**, as a **Docker** container, or on a **Kubernetes** clu
 
 ```
 ivolatility-eod-ivs-etl/
-├── etl_ivol_ivs.py      # Main Python ETL script
+├── main.py      # Main Python ETL script
 ├── requirements.txt     # Python dependencies
 ├── Dockerfile           # Docker build configuration
 ├── .gitignore           # (Recommended) Git ignore patterns
