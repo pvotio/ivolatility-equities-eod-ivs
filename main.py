@@ -146,9 +146,6 @@ def main():
     # 6) Build DELETE statement to remove existing data for a symbol in date range
     delete_sql = f"""
         DELETE FROM {table_name}
-        WHERE [symbol] = ?
-          AND [date] >= ?
-          AND [date] <= ?
     """
 
     def fetch_and_insert_symbol(sym_record):
