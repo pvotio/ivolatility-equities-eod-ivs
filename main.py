@@ -103,7 +103,7 @@ def main():
     config_sql = """
         SELECT TOP 100 Stock_ticker AS TickerSql,
                region AS DefaultRegion
-        FROM ivolatility_underlying_info
+        FROM etl.ivolatility_underlying_info
         WHERE Status = 'Active'
     """
     logging.info(f"Fetching config: {config_sql.strip()}")
