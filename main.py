@@ -4,6 +4,7 @@ import struct
 import logging
 import datetime
 import uuid
+import time
 
 import pyodbc
 import pandas as pd
@@ -27,7 +28,7 @@ def main():
     api_key    = os.getenv("IVOL_API_KEY", "")
     db_server  = os.getenv("DB_SERVER", "")
     db_name    = os.getenv("DB_NAME", "")
-    table_name = os.getenv("TARGET_TABLE", "etl.ivolatility_ivs")  # Default to your actual table
+    table_name = os.getenv("TARGET_TABLE", "etl.ivolatility_ivs")  # Default table
 
     date_from  = os.getenv("DATE_FROM", "")
     date_to    = os.getenv("DATE_TO", "")
@@ -82,11 +83,9 @@ def main():
         connect_args={'attrs_before': attrs}
     )
 
-    # 4) Fetch your list of tickers (and possibly exchange or region if needed)
-    #    Suppose your config table returns exchange instead of region. 
-    #    If not, adapt as needed.
+    # 4) Fetch list of tickers
     config_sql = """
-        SELECT TOP 18000
+        SELECT TOP 18
                Stock_ticker AS TickerSql,
                region AS ExchangeSql
         FROM etl.ivolatility_underlying_info
@@ -107,16 +106,50 @@ def main():
     symbol_records = config_df.to_dict("records")
     logging.info(f"Fetched {len(symbol_records)} symbols to process.")
 
+    # --------------------------------------------------------------------------
+    # STEP A: Purge the entire table once, outside the multi-threaded logic
+    # --------------------------------------------------------------------------
+    try:
+        with pyodbc.connect(odbc_conn_str, attrs_before=attrs) as conn:
+            cur = conn.cursor()
+            delete_sql = f"DELETE FROM {table_name}"
+            cur.execute(delete_sql)
+            conn.commit()
+        logging.info(f"Successfully deleted all rows from {table_name}.")
+    except Exception as dex:
+        logging.error(f"Failed to delete rows from {table_name}: {dex}")
+        sys.exit(1)
+
+    # --------------------------------------------------------------------------
+    # fetch_and_insert_symbol function (no delete step inside)
+    # --------------------------------------------------------------------------
     def fetch_and_insert_symbol(ticker, exchange):
         """
-        1) DELETE old rows for (ticker, date range)
-        2) Fetch data from iVol
-        3) Insert into target table
-        4) Return the number of inserted rows
+        1) Fetch data from iVol for this symbol
+        2) Insert into target table
+        3) Return the number of inserted rows
         """
-        delete_sql = f"""
-            DELETE FROM {table_name}
-        """
+        # If your iVol columns differ, adapt the rename_map accordingly
+        rename_map = {
+            "Call/Put":           "Call_Put",
+            "out-of-the-money %": "OTM",
+            "Days":               "period",
+            "Strike":             "strike",
+        }
+
+        # The order here matches columns in the INSERT statement below
+        needed_cols = [
+            "record_no",
+            "symbol",
+            "exchange",
+            "date",
+            "period",
+            "strike",
+            "OTM",
+            "Call_Put",
+            "IV",
+            "delta"
+        ]
 
         insert_sql = f"""
             INSERT INTO {table_name} (
@@ -134,48 +167,13 @@ def main():
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
-        # We will map iVol column names to match your table columns.
-        # The actual iVol columns may differ! Adjust accordingly.
-        rename_map = {
-            "Call/Put":            "Call_Put",
-            "out-of-the-money %":  "OTM",
-            # If iVol returns 'Days' or 'period' for tenor:
-            "Days":                "period",
-            # If iVol returns 'Strike' for strike price:
-            "Strike":              "strike",
-        }
-
-        # The order here matches the columns in the INSERT statement
-        needed_cols = [
-            "record_no",
-            "symbol",
-            "exchange",
-            "date",
-            "period",
-            "strike",
-            "OTM",
-            "Call_Put",
-            "IV",
-            "delta"
-        ]
-
-        # A) DELETE
-        try:
-            with pyodbc.connect(odbc_conn_str, attrs_before=attrs) as conn:
-                cur = conn.cursor()
-                cur.execute(delete_sql, [ticker, date_from, date_to])
-                conn.commit()
-        except Exception as dex:
-            logging.error(f"Delete failed for {ticker}: {dex}")
-            return 0
-
-        # B) Fetch iVol Data
+        # 1) Fetch iVol Data
         try:
             data_df = getMarketData(
                 symbol=ticker,
                 from_=date_from,
                 to=date_to,
-                region=exchange,   # If iVol's param is actually `region`, pass `exchange` here
+                region=exchange,
                 OTMFrom=int(otm_from),
                 OTMTo=int(otm_to),
                 periodFrom=int(p_from),
@@ -189,38 +187,38 @@ def main():
             logging.info(f"No data for {ticker}, region/exchange={exchange}, date={date_from}->{date_to}.")
             return 0
 
-        # rename columns to match your DB
+        # 2) rename columns as needed
         data_df.rename(columns=rename_map, inplace=True)
 
-        # Supply the table columns as needed
+        # supply the table columns
         data_df["symbol"] = ticker
         data_df["exchange"] = exchange
 
-        # If 'period' or 'strike' is missing, set them to default or null
+        # If 'period' or 'strike' is missing, set them to None
         for col in ["period", "strike"]:
             if col not in data_df.columns:
                 data_df[col] = None
 
-        # Make sure 'record_no' exists and is unique
+        # Ensure we have a unique record_no
         if "record_no" not in data_df.columns:
             data_df["record_no"] = [
                 abs(hash(uuid.uuid4())) % 2147483647
                 for _ in range(len(data_df))
             ]
 
-        # Ensure *every* needed col is present; fill with None if missing
+        # Fill missing needed columns with None
         for col in needed_cols:
             if col not in data_df.columns:
                 data_df[col] = None
 
-        # C) chunked insert
+        # 3) Perform chunked inserts
         chunk_size = 5000
         inserted_count = 0
+        total_rows = len(data_df)
 
-        for start_idx in range(0, len(data_df), chunk_size):
+        for start_idx in range(0, total_rows, chunk_size):
             subset = data_df.iloc[start_idx : start_idx + chunk_size]
             data_tuples = list(subset[needed_cols].itertuples(index=False, name=None))
-
             try:
                 with pyodbc.connect(odbc_conn_str, attrs_before=attrs) as conn:
                     cur = conn.cursor()
@@ -232,19 +230,18 @@ def main():
                 logging.error(f"Insert chunk failed for {ticker}, chunk start={start_idx}: {iex}")
                 return inserted_count
 
+        time.sleep(1)  # small sleep to reduce rapid-fire calls
         return inserted_count
 
-    # 5) Multi-threaded processing for all symbols
+    # --------------------------------------------------------------------------
+    # 5) Multi-threaded processing for all symbols, after the table is empty
+    # --------------------------------------------------------------------------
     total_inserted = 0
     logging.info(f"Starting parallel fetch/insert for {len(symbol_records)} symbols. max_workers={max_workers}")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
-            executor.submit(
-                fetch_and_insert_symbol,
-                r["TickerSql"],
-                r["ExchangeSql"]
-            ): r["TickerSql"]
+            executor.submit(fetch_and_insert_symbol, r["TickerSql"], r["ExchangeSql"]): r["TickerSql"]
             for r in symbol_records
         }
         for future in as_completed(future_map):
@@ -261,3 +258,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
