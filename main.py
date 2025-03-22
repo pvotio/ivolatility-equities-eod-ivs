@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def get_pyodbc_attrs(access_token: str) -> dict:
     """
-    Format the Azure AD access token for pyodbc's SQL_COPT_SS_ACCESS_TOKEN.
+    Convert Azure AD access token into the format required by pyodbc's SQL_COPT_SS_ACCESS_TOKEN.
     """
     SQL_COPT_SS_ACCESS_TOKEN = 1256
     enc_token = access_token.encode('utf-16-le')
@@ -33,7 +33,6 @@ def main():
     db_name    = os.getenv("DB_NAME", "")
     table_name = os.getenv("TARGET_TABLE", "")
 
-    # Date range & other parameters for iVol
     date_from  = os.getenv("DATE_FROM", "")
     date_to    = os.getenv("DATE_TO", "")
     if not date_from:
@@ -43,11 +42,8 @@ def main():
 
     otm_from   = os.getenv("OTM_FROM", "0")
     otm_to     = os.getenv("OTM_TO", "0")
-    # region_def = os.getenv("REGION", "USA")  # <-- We won't read region from ENV anymore
     p_from     = os.getenv("PERIOD_FROM", "90")
     p_to       = os.getenv("PERIOD_TO", "90")
-
-    # Concurrency
     max_workers = int(os.getenv("MAX_WORKERS", "12"))
 
     # Basic checks
@@ -64,15 +60,16 @@ def main():
     logging.info(f"Fetching iVol IVS data from={date_from}, to={date_to}")
     logging.info(f"Target table: {table_name}")
 
-    # 2) Configure IVOL API
+    # 2) Configure iVol API
     try:
         ivol.setLoginParams(apiKey=api_key)
         getMarketData = ivol.setMethod('/equities/eod/ivs')
+        logging.info("Configured iVolatility /equities/eod/ivs.")
     except Exception as e:
         logging.error(f"Failed to configure iVol API: {e}")
         sys.exit(1)
 
-    # 3) Acquire Azure AD token
+    # 3) Acquire Azure AD token for SQL
     logging.info("Acquiring Azure SQL token with DefaultAzureCredential...")
     try:
         credential = DefaultAzureCredential()
@@ -85,21 +82,19 @@ def main():
 
     attrs = get_pyodbc_attrs(access_token)
     odbc_conn_str = (
-        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+        "DRIVER={ODBC Driver 18 for SQL Server};"
         f"SERVER={db_server};"
         f"DATABASE={db_name};"
         "Encrypt=yes;"
         "TrustServerCertificate=no;"
     )
 
-    # Create an engine
     engine = create_engine(
         f"mssql+pyodbc:///?odbc_connect={quote_plus(odbc_conn_str)}",
         connect_args={'attrs_before': attrs}
     )
 
-    # 4) Fetch config row that has TickerSql + Region in FIRST ROW
-    #    Example: we pick top 100, but only use the first row
+    # 4) First, fetch a config row that has TickerSql + Region in the FIRST row
     config_sql = """
         SELECT TOP 100 Stock_ticker AS TickerSql,
                region AS DefaultRegion
@@ -118,7 +113,7 @@ def main():
         sys.exit(1)
 
     # Use only the FIRST ROW's columns
-    ticker_sql     = config_df["TickerSql"].iloc[0]      # e.g. "SELECT symbol, region FROM ..."
+    ticker_sql     = config_df["TickerSql"].iloc[0]      # e.g. "SELECT symbol, region FROM MySymbols ..."
     default_region = config_df["DefaultRegion"].iloc[0]  # e.g. "USA"
 
     logging.info(f"Using TICKER_SQL={ticker_sql}")
@@ -140,87 +135,120 @@ def main():
         logging.error("Your ticker_sql must return a 'symbol' column. Exiting.")
         sys.exit(1)
 
+    # We now have multiple tickers (and maybe a 'region' column). We'll do parallel requests.
     symbol_records = symbol_df.to_dict("records")
     logging.info(f"Fetched {len(symbol_records)} symbols from ticker_sql.")
 
-    # 6) Build DELETE statement to remove existing data for a symbol in date range
+    # 6) Define a parameterized DELETE statement if you want to remove old rows for each ticker/date
     delete_sql = f"""
         DELETE FROM {table_name}
+        WHERE [symbol] = ?
+          AND [date] >= ?
+          AND [date] <= ?
     """
 
-    def fetch_and_insert_symbol(sym_record):
-        """
-        For a single symbol:
-          1) DELETE existing rows in the date range
-          2) FETCH new data from iVol
-          3) RENAME columns (if needed)
-          4) INSERT into SQL
-        """
-        sym = sym_record["symbol"]
-        # region might come from the DB row or fallback to default_region
-        reg = sym_record.get("region", default_region)
+    # 7) We'll do chunk-based insert with pyodbc, no .to_sql reflection
+    insert_sql = f"""
+    INSERT INTO {table_name} (
+        [symbol],
+        [region],
+        [date],
+        [Call_Put],
+        [OTM],
+        [IV],
+        [delta],
+        [record_no]
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """
 
-        # (A) DELETE
+    needed_cols = ["symbol", "region", "date", "Call_Put", "OTM", "IV", "delta", "record_no"]
+
+    def fetch_and_insert_symbol(record):
+        """
+        1) DELETE old rows for (symbol, date range)
+        2) Fetch from iVol
+        3) rename columns
+        4) chunked insert
+        """
+        sym = record["symbol"]
+        reg = record.get("region", default_region)
+
+        # A) DELETE
         try:
             with pyodbc.connect(odbc_conn_str, attrs_before=attrs) as conn:
                 cur = conn.cursor()
                 cur.execute(delete_sql, [sym, date_from, date_to])
                 conn.commit()
-        except Exception as ex:
-            logging.error(f"Failed to delete rows for symbol={sym}: {ex}")
+        except Exception as dex:
+            logging.error(f"Delete failed for {sym}: {dex}")
             return 0
 
-        # (B) FETCH from iVol
+        # B) Fetch from iVol
         try:
             data_df = getMarketData(
                 symbol=sym,
                 from_=date_from,
                 to=date_to,
+                region=reg,
                 OTMFrom=int(otm_from),
                 OTMTo=int(otm_to),
-                region=reg,
                 periodFrom=int(p_from),
                 periodTo=int(p_to)
             )
-        except Exception as e:
-            logging.error(f"Error fetching symbol={sym} from IVOL: {e}")
+        except Exception as fex:
+            logging.error(f"Fetch error for symbol={sym}: {fex}")
             return 0
 
         if data_df.empty:
-            logging.info(f"No data returned for symbol={sym} in [{date_from}->{date_to}].")
+            logging.info(f"No data for {sym}, region={reg}, date range={date_from}->{date_to}.")
             return 0
 
-        # (C) Rename columns (if needed)
+        # rename columns
         rename_map = {
             "Call/Put": "Call_Put",
             "out-of-the-money %": "OTM"
         }
         data_df.rename(columns=rename_map, inplace=True)
 
-        # If 'record_no' is not provided, we must generate unique IDs
+        # Ensure columns
+        data_df["symbol"] = sym
+        data_df["region"] = reg
+
         if "record_no" not in data_df.columns:
+            # generate unique int
             data_df["record_no"] = [
                 abs(hash(uuid.uuid4())) % 2147483647
                 for _ in range(len(data_df))
             ]
 
-        # Fill in missing columns
-        if "symbol" not in data_df.columns:
-            data_df["symbol"] = sym
-        if "exchange" not in data_df.columns:
-            data_df["exchange"] = None   # or perhaps region, if relevant
+        # fill needed_cols if missing
+        for col in needed_cols:
+            if col not in data_df.columns:
+                data_df[col] = None
 
-        inserted_count = len(data_df)
-        # (D) Insert into SQL using pandas to_sql, chunk-based or direct:
-        try:
-            data_df.to_sql(name=table_name, con=engine, if_exists='append', index=False)
-        except Exception as e:
-            logging.error(f"Failed inserting data for symbol={sym}: {e}")
-            return 0
+        # C) chunked insert with pyodbc
+        chunk_size = 5000
+        inserted_count = 0
+
+        for start_idx in range(0, len(data_df), chunk_size):
+            subset = data_df.iloc[start_idx : start_idx + chunk_size]
+            data_tuples = list(subset[needed_cols].itertuples(index=False, name=None))
+
+            try:
+                with pyodbc.connect(odbc_conn_str, attrs_before=attrs) as conn:
+                    cur = conn.cursor()
+                    cur.fast_executemany = True
+                    cur.executemany(insert_sql, data_tuples)
+                    conn.commit()
+                inserted_count += len(data_tuples)
+            except Exception as iex:
+                logging.error(f"Insert chunk failed for {sym}, chunk start={start_idx}: {iex}")
+                return inserted_count
 
         return inserted_count
 
-    # 7) Multithreaded execution
+    # 8) Multithreaded across all symbols
     total_inserted = 0
     logging.info(f"Starting parallel fetch/insert for {len(symbol_records)} symbols. max_workers={max_workers}")
 
@@ -230,15 +258,16 @@ def main():
             rec = future_map[future]
             sym = rec["symbol"]
             try:
-                inserted = future.result()
-                total_inserted += inserted
-                logging.info(f"Symbol {sym}: Inserted {inserted} row(s). (Running total: {total_inserted})")
+                cnt = future.result()
+                total_inserted += cnt
+                logging.info(f"Symbol {sym}: inserted {cnt} rows. (Running total={total_inserted})")
             except Exception as exc:
-                logging.error(f"Symbol {sym} failed: {exc}")
+                logging.error(f"Symbol {sym} failed concurrency: {exc}")
 
-    logging.info(f"All symbols processed. Total rows inserted: {total_inserted}.")
+    logging.info(f"All symbols processed. Total inserted: {total_inserted}.")
     logging.info("ETL job completed successfully.")
 
 if __name__ == "__main__":
     main()
+
 
