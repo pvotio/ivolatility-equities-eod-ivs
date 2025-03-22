@@ -1,4 +1,4 @@
-# iVolatility EOD IVS ETL
+# ivolatility-equities-eod-ivs
 
 This repository contains a **Python-based ETL** job for retrieving **iVolatility** data from the endpoint `"/equities/eod/ivs"` and loading it into an **Azure SQL** database. The code supports:
 
@@ -209,7 +209,7 @@ Contributions are welcome! Please:
 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 
 ```
-Copyright 2023 pvotio
+Copyright 2025 pvotio
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
