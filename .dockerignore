@@ -1,0 +1,25 @@
+# Ignore Git metadata
+.git
+.gitignore
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env/
+.ipynb_checkpoints
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Docker files themselves (optional to ignore them in the context)
+Dockerfile
+docker-compose.yml
