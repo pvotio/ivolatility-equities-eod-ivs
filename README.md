@@ -185,10 +185,7 @@ CREATE TABLE [etl].[ivolatility_ivs] (
     [OTM]        INT            NULL,
     [Call_Put]   NVARCHAR(10)   NULL,
     [IV]         DECIMAL(10,6)  NULL,
-    [delta]      DECIMAL(10,6)  NULL,
-
-    CONSTRAINT PK_ivolatility_ivs
-        PRIMARY KEY ([record_no])
+    [delta]      DECIMAL(10,6)  NULL
 );
 ```
 
