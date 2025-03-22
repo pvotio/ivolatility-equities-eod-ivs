@@ -47,7 +47,7 @@ def main():
     p_to       = os.getenv("PERIOD_TO", "90")
 
     # SQL to select symbols (and optionally region) from Azure SQL
-    ticker_sql = os.getenv("TICKER_SQL", "SELECT symbol FROM MySymbols")
+    ticker_sql = os.getenv("TICKER_SQL", "AAPL")
 
     # Concurrency
     max_workers = int(os.getenv("MAX_WORKERS", "12"))
