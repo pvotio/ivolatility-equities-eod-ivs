@@ -1,2 +1,41 @@
-# Google App Engine generated folder
-appengine-generated/
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.so
+*.dll
+*.dylib
+
+# C extensions
+build/
+dist/
+
+# Setuptools / Wheel packaging
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Logs
+*.log
+*.pid
+*.seed
+*.cover
+coverage.xml
+
+# Mac / Windows system files
+.DS_Store
+Thumbs.db
+
+# pyproject/ Poetry caches
+poetry.lock
+__pypackages__/
+
+# VS Code settings (optional)
+.vscode/
