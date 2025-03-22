@@ -16,8 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy ETL script
-COPY etl_ivol_ivs.py /app/etl_ivol_ivs.py
-WORKDIR /app
+COPY main.py .
 
 # Default command
-ENTRYPOINT ["python", "etl_ivol_ivs.py"]
+ENTRYPOINT ["python", "main.py"]
