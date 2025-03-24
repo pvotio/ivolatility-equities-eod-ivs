@@ -29,7 +29,7 @@ This repository contains a **Python-based ETL** job for retrieving **iVolatility
 
 This ETL job:
 
-1. **Fetches ticker + region** from an **Azure SQL** table (via `SELECT TOP 100 Stock_ticker AS symbol, region FROM ivolatility_underlying_info WHERE Status = 'Active'`).
+1. **Fetches ticker + region** from an **Azure SQL** table (via `SELECT TOP 100 Stock_ticker AS symbol, region FROM etl.ivolatility_underlying_info WHERE Status = 'Active'`).
 2. **Uses the first row** to retrieve:
    - A **T-SQL query** to fetch symbols + regions
    - A **default region** fallback (if not provided per symbol)
