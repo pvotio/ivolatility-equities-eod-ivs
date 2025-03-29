@@ -1,4 +1,4 @@
-FROM python:3.11-slim-bullseye
+FROM python:3.13.2-alpine3.21
 
 # Install system dependencies + MS ODBC driver
 RUN apt-get update && apt-get install -y \
